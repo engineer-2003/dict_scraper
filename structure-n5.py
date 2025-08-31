@@ -2,7 +2,7 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 import time
 
-def fetch_n5_noun_html():
+def fetch_n5_noun_rows():
     # Chrome headless mode 설정
     chrome_options = Options()
     chrome_options.add_argument("--headless")
@@ -20,20 +20,24 @@ def fetch_n5_noun_html():
         # 페이지 로딩 대기
         time.sleep(8)
 
-        page_source = driver.page_source
-        print(f"HTML 길이: {len(page_source)}")
+        # class="row"인 li 요소들 가져오기
+        rows = driver.find_elements("css selector", "li.row")
 
-        # 앞부분만 콘솔에 출력 (너무 길어질 수 있으니)
-        print("\n=== HTML 미리보기 (앞 2000자) ===")
-        print(page_source[:2000])
+        print(f"총 {len(rows)}개의 li.row 요소 발견")
+
+        for idx, row in enumerate(rows, start=1):
+            html = row.get_attribute("outerHTML")
+            print(f"\n=== li.row #{idx} ===")
+            print(html)
 
         # 필요하다면 파일로 저장
-        with open("n5_noun_page1.html", "w", encoding="utf-8") as f:
-            f.write(page_source)
-        print("✅ HTML 저장 완료: n5_noun_page1.html")
+        with open("n5_noun_rows.html", "w", encoding="utf-8") as f:
+            for row in rows:
+                f.write(row.get_attribute("outerHTML") + "\n")
+        print("✅ li.row HTML 저장 완료: n5_noun_rows.html")
 
     finally:
         driver.quit()
 
 if __name__ == "__main__":
-    fetch_n5_noun_html()
+    fetch_n5_noun_rows()
