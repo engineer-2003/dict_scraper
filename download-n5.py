@@ -1,12 +1,37 @@
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
-from bs4 import BeautifulSoup
-import time
+from selenium.common.exceptions import WebDriverException
 import csv
-import re
+import time
+import datetime
+import signal
+import sys
 
-def fetch_n5_noun_to_csv():
-    # Chrome headless mode 설정
+# 중간 저장용 리스트
+data_rows = []
+
+# Ctrl+C 시 중간 저장
+def save_on_exit(signal_received, frame):
+    print("\n중간 저장 진행...")
+    if data_rows:
+        with open("n5_words_partial.csv", "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(data_rows)
+        print(f"✅ 중간 저장 완료: n5_words_partial.csv ({len(data_rows)}개 단어)")
+    sys.exit(0)
+
+signal.signal(signal.SIGINT, save_on_exit)
+
+# CSV 필드
+fieldnames = [
+    "id", "level_name", "part_of_speech", "word", "reading", "meaning",
+    "example_sentence", "example_translation", "created_at",
+    "example", "furigana", "level", "word_type"
+]
+
+# 단어 정보 추출 함수
+def fetch_n5_words():
     chrome_options = Options()
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--disable-gpu")
@@ -16,51 +41,91 @@ def fetch_n5_noun_to_csv():
     driver = webdriver.Chrome(options=chrome_options)
 
     try:
-        url = "https://ja.dict.naver.com/#/jlpt/list?level=5&part=noun&page=1"
-        print(f"접속: {url}")
-        driver.get(url)
-        time.sleep(8)  # 페이지 로딩 대기
+        parts = ["noun", "adjective", "adjective_na", "verb"]
+        word_id = 1
+        for part in parts:
+            page = 1
+            while True:
+                url = f"https://ja.dict.naver.com/#/jlpt/list?level=5&part={part}&page={page}"
+                print(f"\n접속: {url}")
+                driver.get(url)
+                time.sleep(8)
 
-        soup = BeautifulSoup(driver.page_source, "html.parser")
+                rows = driver.find_elements("css selector", "li.row")
+                if not rows:
+                    print("단어 없음, 페이지 종료")
+                    break
 
-        # 단어 리스트
-        word_items = soup.select("ul#my_jlpt_list_template li.row")
-        data_list = []
+                print(f"총 {len(rows)}개의 단어 발견")
 
-        for item in word_items:
-            word = item.select_one(".origin .link").text.strip()
-            pronunciation = item.select_one(".origin .pronunciation").text.strip()
+                for idx, row in enumerate(rows, start=1):
+                    try:
+                        word_elem = row.find_element("css selector", "div.origin a.link")
+                        word = word_elem.text.strip()
+                        link = word_elem.get_attribute("href")
+                        reading_elem = row.find_element("css selector", "div.origin span.pronunciation")
+                        reading = reading_elem.text.strip("[]")
+                        meaning_elem = row.find_element("css selector", "ul.mean_list li.mean_item p.mean")
+                        pos_elem = meaning_elem.find_element("css selector", "span.word_class")
+                        part_of_speech = pos_elem.text.strip()
+                        meaning = meaning_elem.text.replace(part_of_speech, "").strip()
 
-            # 의미 추출
-            meanings = item.select(".mean_list .mean_item .mean")
-            first_mean = ""
-            if meanings:
-                text = meanings[0].get_text(strip=True)
-                # 품사 제거
-                cls = meanings[0].select_one(".word_class")
-                if cls:
-                    text = text.replace(cls.text.strip(), "")
-                # 첫 번째 의미만 가져오기 (숫자 제거)
-                first_mean = re.split(r'\d+\.', text)[1].strip() if re.search(r'\d+\.', text) else text
+                        print(f"\n[{word_id}] 단어: {word}, 품사: {part_of_speech}, 의미: {meaning}")
 
-            data_list.append({
-                "word": word,
-                "pronunciation": pronunciation,
-                "meaning": first_mean
-            })
+                        # 예문 추출
+                        driver.execute_script("window.open('');")
+                        driver.switch_to.window(driver.window_handles[1])
+                        driver.get(link)
+                        time.sleep(5)
 
-        # CSV 저장
-        csv_file = "n5_nouns.csv"
-        with open(csv_file, "w", encoding="utf-8-sig", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=["word", "pronunciation", "meaning"])
+                        example_sentence = ""
+                        example_translation = ""
+                        try:
+                            example_elem = driver.find_element("css selector", "div.example_item p.origin.my_origin")
+                            example_sentence = "".join([char.text for char in example_elem.find_elements("css selector", "span, rb")])
+                            translation_elem = driver.find_element("css selector", "div.example_item p.translate")
+                            example_translation = translation_elem.text.strip()
+                        except WebDriverException:
+                            print("예문 없음")
+
+                        driver.close()
+                        driver.switch_to.window(driver.window_handles[0])
+
+                        created_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                        data_rows.append({
+                            "id": word_id,
+                            "level_name": "N5",
+                            "part_of_speech": part_of_speech.lower(),
+                            "word": word,
+                            "reading": reading,
+                            "meaning": meaning,
+                            "example_sentence": example_sentence,
+                            "example_translation": example_translation,
+                            "created_at": created_at,
+                            "example": None,
+                            "furigana": None,
+                            "level": "",
+                            "word_type": ""
+                        })
+
+                        word_id += 1
+
+                    except WebDriverException as e:
+                        print(f"단어 추출 실패: {e}")
+                        continue
+
+                page += 1
+
+        # 최종 CSV 저장
+        with open("n5_words.csv", "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
-            for d in data_list:
-                writer.writerow(d)
-
-        print(f"✅ CSV 저장 완료: {csv_file}")
+            writer.writerows(data_rows)
+        print(f"\n✅ 최종 CSV 저장 완료: n5_words.csv ({len(data_rows)}개 단어)")
 
     finally:
         driver.quit()
 
 if __name__ == "__main__":
-    fetch_n5_noun_to_csv()
+    fetch_n5_words()
