@@ -6,6 +6,7 @@ import time
 import datetime
 import signal
 import sys
+from bs4 import BeautifulSoup
 
 # 중간 저장용 리스트
 data_rows = []
@@ -26,8 +27,7 @@ signal.signal(signal.SIGINT, save_on_exit)
 # CSV 필드
 fieldnames = [
     "id", "level_name", "part_of_speech", "word", "reading", "meaning",
-    "example_sentence", "example_translation", "created_at",
-    "example", "furigana", "level", "word_type"
+    "example_sentence", "example_translation", "created_at"
 ]
 
 # 단어 정보 추출 함수
@@ -82,7 +82,24 @@ def fetch_n5_words():
                         example_translation = ""
                         try:
                             example_elem = driver.find_element("css selector", "div.example_item p.origin.my_origin")
-                            example_sentence = "".join([char.text for char in example_elem.find_elements("css selector", "span, rb")])
+                            html = example_elem.get_attribute("innerHTML")
+
+                            # BeautifulSoup으로 파싱
+                            soup = BeautifulSoup(html, "html.parser")
+
+                            # ruby 태그 처리: rb만 남기고 rt는 무시
+                            for ruby in soup.find_all("ruby"):
+                                rb_text = ruby.rb.get_text() if ruby.rb else ""
+                                ruby.replace_with(rb_text)
+
+                            # 최종 텍스트 (원문만)
+                            text_span = soup.find("span", class_="text")
+                            if text_span:
+                                example_sentence = text_span.get_text(strip=True)
+                            else:
+                                example_sentence = soup.get_text(strip=True)
+
+                            # 번역문 추출
                             translation_elem = driver.find_element("css selector", "div.example_item p.translate")
                             example_translation = translation_elem.text.strip()
                         except WebDriverException:
@@ -102,11 +119,7 @@ def fetch_n5_words():
                             "meaning": meaning,
                             "example_sentence": example_sentence,
                             "example_translation": example_translation,
-                            "created_at": created_at,
-                            "example": None,
-                            "furigana": None,
-                            "level": "",
-                            "word_type": ""
+                            "created_at": created_at
                         })
 
                         word_id += 1
