@@ -13,7 +13,7 @@ def fetch_first_example_item_html():
     driver = webdriver.Chrome(options=chrome_options)
 
     try:
-        url = "https://ja.dict.naver.com/?m=mobile#/entry/jako/cbbc047d8782416595bf4a7b1a4b4ad4"
+        url = "https://ja.dict.naver.com/#/entry/jako/bee8ceb9e3254ba2b88d6ea1b24d43ab"
         print(f"접속: {url}")
         driver.get(url)
 
@@ -21,7 +21,7 @@ def fetch_first_example_item_html():
         time.sleep(8)
 
         # 첫 번째 div.example_item 가져오기
-        example_div = driver.find_element("css selector", "div.example_item")
+        example_div = driver.find_element("css selector", "div.component_entry")
         outer_html = example_div.get_attribute("outerHTML")
 
         print("\n=== 첫 번째 div.example_item HTML ===")
