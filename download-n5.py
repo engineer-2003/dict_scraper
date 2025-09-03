@@ -10,7 +10,8 @@ from bs4 import BeautifulSoup
 
 # 중간 저장용 리스트
 data_rows = []
-conjugation_rows = []
+verb_conjugation_rows = []
+adj_conjugation_rows = []
 
 # Ctrl+C 시 중간 저장
 def save_on_exit(signal_received, frame):
@@ -22,12 +23,19 @@ def save_on_exit(signal_received, frame):
             writer.writerows(data_rows)
         print(f"✅ 중간 저장 완료: n5_words_partial.csv ({len(data_rows)}개 단어)")
 
-    if conjugation_rows:
-        with open("n5_conjugations_partial.csv", "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames_conj)
+    if verb_conjugation_rows:
+        with open("n5_conjugations_verbs_partial.csv", "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames_verb_conj)
             writer.writeheader()
-            writer.writerows(conjugation_rows)
-        print(f"✅ 중간 저장 완료: n5_conjugations_partial.csv ({len(conjugation_rows)}개 활용형)")
+            writer.writerows(verb_conjugation_rows)
+        print(f"✅ 중간 저장 완료: n5_conjugations_verbs_partial.csv ({len(verb_conjugation_rows)}개 활용형)")
+
+    if adj_conjugation_rows:
+        with open("n5_conjugations_adjectives_partial.csv", "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames_adj_conj)
+            writer.writeheader()
+            writer.writerows(adj_conjugation_rows)
+        print(f"✅ 중간 저장 완료: n5_conjugations_adjectives_partial.csv ({len(adj_conjugation_rows)}개 활용형)")
 
     sys.exit(0)
 
@@ -39,9 +47,14 @@ fieldnames_words = [
     "example_sentence", "example_translation", "created_at"
 ]
 
-fieldnames_conj = [
+fieldnames_verb_conj = [
     "id", "word_id", "masu_form", "negative_form", "volitional_form",
     "conditional_form", "imperative_form", "potential_form"
+]
+
+fieldnames_adj_conj = [
+    "id", "word_id", "mizen_form", "negative_form", "te_form", "past_form",
+    "conditional_form", "polite_form", "adverbial_form", "noun_form"
 ]
 
 # 품사 매핑 (네이버 사전 URL 구조 대응)
@@ -65,7 +78,8 @@ def fetch_n5_words():
     try:
         parts = ["noun", "adjective", "adjective_na", "verb"]
         word_id = 1
-        conj_id = 1
+        verb_conj_id = 1
+        adj_conj_id = 1
 
         for part in parts:
             url_part = part_url_map[part]
@@ -124,40 +138,36 @@ def fetch_n5_words():
                         except WebDriverException:
                             print("예문 없음")
 
-                        # === 활용형 추출 (동사일 때만) ===
+                        # === 활용형 추출 ===
+                        html_full = driver.page_source
+                        soup = BeautifulSoup(html_full, "html.parser")
+
                         if part == "verb":
                             masu_form = negative_form = volitional_form = ""
                             conditional_form = imperative_form = potential_form = ""
 
-                            try:
-                                html_full = driver.page_source
-                                soup = BeautifulSoup(html_full, "html.parser")
+                            for dt in soup.select("dl.entry_conjugation_list dt.tit"):
+                                form_type = dt.get("scrolltitle", "")
+                                dd = dt.find_next_sibling("dd")
+                                if not dd:
+                                    continue
+                                form_word = dd.get_text(strip=True)
 
-                                for dt in soup.select("dl.entry_conjugation_list dt.tit"):
-                                    form_type = dt.get("scrolltitle", "")
-                                    dd = dt.find_next_sibling("dd")
-                                    if not dd:
-                                        continue
-                                    form_word = dd.get_text(strip=True)
+                                if form_type == "ます형":
+                                    masu_form = form_word
+                                elif form_type == "부정형":
+                                    negative_form = form_word
+                                elif form_type == "청유형":
+                                    volitional_form = form_word
+                                elif form_type == "가정형":
+                                    conditional_form = form_word
+                                elif form_type == "명령형":
+                                    imperative_form = form_word
+                                elif form_type == "가능형":
+                                    potential_form = form_word
 
-                                    if form_type == "ます형":
-                                        masu_form = form_word
-                                    elif form_type == "부정형":
-                                        negative_form = form_word
-                                    elif form_type == "청유형":
-                                        volitional_form = form_word
-                                    elif form_type == "가정형":
-                                        conditional_form = form_word
-                                    elif form_type == "명령형":
-                                        imperative_form = form_word
-                                    elif form_type == "가능형":
-                                        potential_form = form_word
-
-                            except Exception as e:
-                                print(f"활용형 추출 실패: {e}")
-
-                            conjugation_rows.append({
-                                "id": conj_id,
+                            verb_conjugation_rows.append({
+                                "id": verb_conj_id,
                                 "word_id": word_id,
                                 "masu_form": masu_form,
                                 "negative_form": negative_form,
@@ -166,7 +176,45 @@ def fetch_n5_words():
                                 "imperative_form": imperative_form,
                                 "potential_form": potential_form
                             })
-                            conj_id += 1
+                            verb_conj_id += 1
+
+                        elif part == "adjective":
+                            mizen_form = negative_form = te_form = past_form = ""
+                            conditional_form = polite_form = adverbial_form = noun_form = ""
+
+                            for dt in soup.select("dl.entry_conjugation_list dt.tit"):
+                                form_type = dt.get("scrolltitle", "")
+                                dd = dt.find_next_sibling("dd")
+                                if not dd:
+                                    continue
+                                form_word = dd.get_text(strip=True)
+
+                                if form_type == "미연형":
+                                    mizen_form = form_word
+                                elif form_type == "부정형":
+                                    negative_form = form_word
+                                elif form_type == "て형":
+                                    te_form = form_word
+                                elif form_type == "과거형":
+                                    past_form = form_word
+                                elif form_type == "가정형":
+                                    conditional_form = form_word
+                                elif form_type == "정중형":
+                                    polite_form = form_word
+
+                            adj_conjugation_rows.append({
+                                "id": adj_conj_id,
+                                "word_id": word_id,
+                                "mizen_form": mizen_form,
+                                "negative_form": negative_form,
+                                "te_form": te_form,
+                                "past_form": past_form,
+                                "conditional_form": conditional_form,
+                                "polite_form": polite_form,
+                                "adverbial_form": adverbial_form,
+                                "noun_form": noun_form
+                            })
+                            adj_conj_id += 1
 
                         driver.close()
                         driver.switch_to.window(driver.window_handles[0])
@@ -201,12 +249,19 @@ def fetch_n5_words():
             writer.writerows(data_rows)
         print(f"\n✅ 최종 CSV 저장 완료: n5_words.csv ({len(data_rows)}개 단어)")
 
-        if conjugation_rows:
-            with open("n5_conjugations.csv", "w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=fieldnames_conj)
+        if verb_conjugation_rows:
+            with open("n5_conjugations_verbs.csv", "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames_verb_conj)
                 writer.writeheader()
-                writer.writerows(conjugation_rows)
-            print(f"✅ 최종 CSV 저장 완료: n5_conjugations.csv ({len(conjugation_rows)}개 활용형)")
+                writer.writerows(verb_conjugation_rows)
+            print(f"✅ 최종 CSV 저장 완료: n5_conjugations_verbs.csv ({len(verb_conjugation_rows)}개 활용형)")
+
+        if adj_conjugation_rows:
+            with open("n5_conjugations_adjectives.csv", "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames_adj_conj)
+                writer.writeheader()
+                writer.writerows(adj_conjugation_rows)
+            print(f"✅ 최종 CSV 저장 완료: n5_conjugations_adjectives.csv ({len(adj_conjugation_rows)}개 활용형)")
 
     finally:
         driver.quit()

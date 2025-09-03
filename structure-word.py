@@ -13,7 +13,7 @@ def fetch_first_example_item_html():
     driver = webdriver.Chrome(options=chrome_options)
 
     try:
-        url = "https://ja.dict.naver.com/#/entry/jako/bee8ceb9e3254ba2b88d6ea1b24d43ab"
+        url = "https://ja.dict.naver.com/#/entry/jako/a922737407f9496db77ae3fcb8e7226d"
         print(f"접속: {url}")
         driver.get(url)
 
