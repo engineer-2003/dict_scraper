@@ -65,6 +65,35 @@ part_url_map = {
     "verb": "adjective"              # 동사
 }
 
+# 활용형에서 순수 단어만 추출하는 함수
+def extract_conjugation_word(dd_element):
+    """
+    dd 요소에서 순수한 활용형 단어만 추출 (더보기 버튼 제외)
+    """
+    try:
+        # span.word 요소를 찾아서 텍스트 추출
+        word_span = dd_element.find("span", class_="word")
+        if word_span:
+            # HTML을 파싱해서 루비 태그 처리
+            html = str(word_span)
+            soup = BeautifulSoup(html, "html.parser")
+            
+            # 루비 태그가 있으면 rb 텍스트만 사용
+            for ruby in soup.find_all("ruby"):
+                rb_text = ruby.rb.get_text() if ruby.rb else ""
+                ruby.replace_with(rb_text)
+            
+            # 최종 텍스트 추출
+            word_text = soup.get_text(strip=True)
+            return word_text
+        else:
+            # span.word가 없으면 전체 텍스트에서 "더보기" 제거
+            full_text = dd_element.get_text(strip=True)
+            return full_text.replace("더보기", "").strip()
+    except Exception as e:
+        print(f"활용형 추출 오류: {e}")
+        return ""
+
 # 단어 정보 추출 함수
 def fetch_n5_words():
     chrome_options = Options()
@@ -138,7 +167,7 @@ def fetch_n5_words():
                         except WebDriverException:
                             print("예문 없음")
 
-                        # === 활용형 추출 ===
+                        # === 활용형 추출 (수정된 부분) ===
                         html_full = driver.page_source
                         soup = BeautifulSoup(html_full, "html.parser")
 
@@ -151,7 +180,9 @@ def fetch_n5_words():
                                 dd = dt.find_next_sibling("dd")
                                 if not dd:
                                     continue
-                                form_word = dd.get_text(strip=True)
+                                
+                                # 수정된 부분: 순수 단어만 추출
+                                form_word = extract_conjugation_word(dd)
 
                                 if form_type == "ます형":
                                     masu_form = form_word
@@ -187,7 +218,9 @@ def fetch_n5_words():
                                 dd = dt.find_next_sibling("dd")
                                 if not dd:
                                     continue
-                                form_word = dd.get_text(strip=True)
+                                
+                                # 수정된 부분: 순수 단어만 추출
+                                form_word = extract_conjugation_word(dd)
 
                                 if form_type == "미연형":
                                     mizen_form = form_word
