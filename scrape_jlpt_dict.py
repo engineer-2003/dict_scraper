@@ -1,190 +1,332 @@
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-import numpy as np
-import pandas as pd
+from selenium.common.exceptions import WebDriverException
+import csv
 import time
+import datetime
+import signal
+import sys
+from bs4 import BeautifulSoup
 
-# chrome headless mode
-chrome_options = Options()
-chrome_options.add_argument("--headless")
-chrome_options.add_argument("--disable-gpu")
-chrome_options.add_argument("--no-sandbox")
-chrome_options.add_argument("--disable-dev-shm-usage")
+# 중간 저장용 리스트
+data_rows = []
+verb_conjugation_rows = []
+adj_conjugation_rows = []
 
-# 결과 데이터 저장용 배열
-total_data = []
+# Ctrl+C 시 중간 저장
+def save_on_exit(signal_received, frame):
+    print("\n중간 저장 진행...")
+    if data_rows:
+        with open("jlpt_words_partial.csv", "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames_words)
+            writer.writeheader()
+            writer.writerows(data_rows)
+        print(f"✅ 중간 저장 완료: jlpt_words_partial.csv ({len(data_rows)}개 단어)")
 
-# 품사별 분류 (명사, 형용사, 형용동사, 동사)
-word_types = {
-    "noun": "명사",
-    "adjective": "형용사", 
-    "adjectival_verb": "형용동사",
-    "verb": "동사"
+    if verb_conjugation_rows:
+        with open("jlpt_conjugations_verbs_partial.csv", "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames_verb_conj)
+            writer.writeheader()
+            writer.writerows(verb_conjugation_rows)
+        print(f"✅ 중간 저장 완료: jlpt_conjugations_verbs_partial.csv ({len(verb_conjugation_rows)}개 활용형)")
+
+    if adj_conjugation_rows:
+        with open("jlpt_conjugations_adjectives_partial.csv", "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames_adj_conj)
+            writer.writeheader()
+            writer.writerows(adj_conjugation_rows)
+        print(f"✅ 중간 저장 완료: jlpt_conjugations_adjectives_partial.csv ({len(adj_conjugation_rows)}개 활용형)")
+
+    sys.exit(0)
+
+signal.signal(signal.SIGINT, save_on_exit)
+
+# CSV 필드
+fieldnames_words = [
+    "id", "level_name", "part_of_speech", "word", "reading", "meaning",
+    "example_sentence", "example_translation", "created_at"
+]
+
+fieldnames_verb_conj = [
+    "id", "word_id", "masu_form", "negative_form", "volitional_form",
+    "conditional_form", "imperative_form", "potential_form"
+]
+
+fieldnames_adj_conj = [
+    "id", "word_id", "mizen_form", "negative_form", "te_form", "past_form",
+    "conditional_form", "polite_form", "adverbial_form", "noun_form"
+]
+
+# 품사 매핑 (네이버 사전 URL 구조 대응)
+part_url_map = {
+    "noun": "noun",
+    "adjective": "measurement",      # 형용사
+    "adjective_na": "pronoun",       # 형용동사
+    "verb": "adjective"              # 동사
 }
 
 # JLPT 급수
-levels = ["1", "2", "3", "4", "5"]
+jlpt_levels = ["1", "2", "3", "4", "5"]
 
-def get_word_details(driver, word_element):
-    """개별 단어의 상세 정보를 가져오는 함수"""
+# 활용형에서 순수 단어만 추출하는 함수
+def extract_conjugation_word(dd_element):
+    """
+    dd 요소에서 순수한 활용형 단어만 추출 (더보기 버튼 제외)
+    """
     try:
-        # 단어 클릭
-        word_element.click()
-        time.sleep(1)
-        
-        # 상세 정보 대기
-        wait = WebDriverWait(driver, 10)
-        
-        # 단어 정보 추출
-        word_text = ""
-        furigana = ""
-        meaning = ""
-        example = ""
-        
-        try:
-            # 단어와 후리가나 추출
-            word_elem = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".mean_item")))
-            word_text = word_elem.get_attribute("data-items") or word_elem.text
+        # span.word 요소를 찾아서 텍스트 추출
+        word_span = dd_element.find("span", class_="word")
+        if word_span:
+            # HTML을 파싱해서 루비 태그 처리
+            html = str(word_span)
+            soup = BeautifulSoup(html, "html.parser")
             
-            # 후리가나 추출 (있는 경우)
-            furigana_elems = driver.find_elements(By.CSS_SELECTOR, ".mean_item ruby rt")
-            if furigana_elems:
-                furigana = furigana_elems[0].text
-                
-            # 뜻 추출
-            meaning_elems = driver.find_elements(By.CSS_SELECTOR, ".mean_list .mean_item .mean_desc")
-            if meaning_elems:
-                meaning = meaning_elems[0].text
-                
-            # 예문 추출
-            example_elems = driver.find_elements(By.CSS_SELECTOR, ".example_item")
-            if example_elems:
-                example = example_elems[0].text
-                
-        except Exception as e:
-            print(f"상세 정보 추출 오류: {e}")
+            # 루비 태그가 있으면 rb 텍스트만 사용
+            for ruby in soup.find_all("ruby"):
+                rb_text = ruby.rb.get_text() if ruby.rb else ""
+                ruby.replace_with(rb_text)
             
-        return word_text, furigana, meaning, example
-        
+            # 최종 텍스트 추출
+            word_text = soup.get_text(strip=True)
+            return word_text
+        else:
+            # span.word가 없으면 전체 텍스트에서 "더보기" 제거
+            full_text = dd_element.get_text(strip=True)
+            return full_text.replace("더보기", "").strip()
     except Exception as e:
-        print(f"단어 클릭 오류: {e}")
-        return "", "", "", ""
+        print(f"활용형 추출 오류: {e}")
+        return ""
 
-def scrape_jlpt_words():
-    """JLPT 단어 스크래핑 메인 함수"""
-    
-    for level in levels:
-        print(f"=== JLPT {level}급 단어 수집 시작 ===")
-        
-        for word_type, type_name in word_types.items():
-            print(f"품사: {type_name} ({word_type})")
-            page = 1
+# 단어 정보 추출 함수
+def fetch_jlpt_words():
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+
+    driver = webdriver.Chrome(options=chrome_options)
+
+    try:
+        parts = ["noun", "adjective", "adjective_na", "verb"]
+        word_id = 1
+        verb_conj_id = 1
+        adj_conj_id = 1
+
+        # 모든 JLPT 급수에 대해 반복
+        for level in jlpt_levels:
+            print(f"\n{'='*50}")
+            print(f"JLPT {level}급 단어 수집 시작")
+            print(f"{'='*50}")
             
-            while True:
-                driver = webdriver.Chrome(options=chrome_options)
-                
-                try:
-                    # URL 생성
-                    url = f"https://ja.dict.naver.com/#/jlpt/list?level={level}&part={word_type}&page={page}"
-                    driver.get(url)
-                    
-                    # 페이지 로딩 대기
-                    wait = WebDriverWait(driver, 10)
-                    time.sleep(3)
-                    
-                    # 단어 목록 요소 찾기
-                    try:
-                        word_list = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "#my_jlpt_list_template")))
-                        word_items = driver.find_elements(By.CSS_SELECTOR, "#my_jlpt_list_template .mean_item")
-                        
-                        if not word_items:
-                            print(f"페이지 {page}에 단어가 없습니다. 다음 품사로...")
-                            break
-                            
-                        print(f"페이지 {page}: {len(word_items)}개 단어 발견")
-                        
-                        # 각 단어에 대해 상세 정보 수집
-                        for idx, word_item in enumerate(word_items):
-                            try:
-                                # 기본 단어 정보 추출
-                                word_text = word_item.text.split('\n')[0] if word_item.text else ""
-                                
-                                # 단어 클릭하여 상세 정보 가져오기
-                                detailed_word, furigana, meaning, example = get_word_details(driver, word_item)
-                                
-                                if not detailed_word:
-                                    detailed_word = word_text
-                                
-                                # 데이터 저장
-                                word_data = {
-                                    "급수": level,
-                                    "품사": type_name,
-                                    "단어": detailed_word,
-                                    "후리가나": furigana,
-                                    "뜻": meaning,
-                                    "예문": example
-                                }
-                                
-                                total_data.append(word_data)
-                                print(f"  {idx+1}. {detailed_word} ({furigana}) - {meaning[:30]}...")
-                                
-                                # 뒤로 가기 또는 목록으로 돌아가기
-                                driver.back()
-                                time.sleep(1)
-                                
-                                # 목록 다시 로드
-                                word_items = driver.find_elements(By.CSS_SELECTOR, "#my_jlpt_list_template .mean_item")
-                                
-                            except Exception as e:
-                                print(f"단어 처리 오류: {e}")
-                                continue
-                                
-                        page += 1
-                        
-                    except Exception as e:
-                        print(f"페이지 로딩 오류: {e}")
-                        break
-                        
-                except Exception as e:
-                    print(f"전체 페이지 오류: {e}")
-                    break
-                    
-                finally:
-                    driver.quit()
-                    
-                # 페이지 간 대기
-                time.sleep(2)
+            for part in parts:
+                url_part = part_url_map[part]
+                page = 1
 
-def save_to_excel():
-    """데이터를 엑셀 파일로 저장"""
-    if total_data:
-        df = pd.DataFrame(total_data)
-        filename = "naver_jlpt_words_detailed.xlsx"
-        df.to_excel(filename, index=False, encoding='utf-8-sig')
-        print(f"\n=== 데이터 저장 완료 ===")
-        print(f"파일명: {filename}")
-        print(f"총 수집된 단어 수: {len(total_data)}")
-        
-        # 급수별, 품사별 통계
-        stats = df.groupby(['급수', '품사']).size().unstack(fill_value=0)
-        print("\n=== 수집 통계 ===")
-        print(stats)
-    else:
-        print("수집된 데이터가 없습니다.")
+                print(f"\n--- {part} 품사 수집 시작 ---")
+
+                while True:
+                    url = f"https://ja.dict.naver.com/#/jlpt/list?level={level}&part={url_part}&page={page}"
+                    print(f"\n접속: {url}")
+                    driver.get(url)
+                    time.sleep(8)
+
+                    rows = driver.find_elements("css selector", "li.row")
+                    if not rows:
+                        print(f"JLPT {level}급 {part} 품사 페이지 {page}: 단어 없음, 다음 품사로 이동")
+                        break
+
+                    print(f"JLPT {level}급 {part} 품사 페이지 {page}: {len(rows)}개의 단어 발견")
+
+                    for idx, row in enumerate(rows, start=1):
+                        try:
+                            word_elem = row.find_element("css selector", "div.origin a.link")
+                            word = word_elem.text.strip()
+                            link = word_elem.get_attribute("href")
+                            reading_elem = row.find_element("css selector", "div.origin span.pronunciation")
+                            reading = reading_elem.text.strip("[]")
+                            meaning_elem = row.find_element("css selector", "ul.mean_list li.mean_item p.mean")
+                            pos_elem = meaning_elem.find_element("css selector", "span.word_class")
+                            part_of_speech = pos_elem.text.strip()
+                            meaning = meaning_elem.text.replace(part_of_speech, "").strip()
+
+                            print(f"[{word_id}] N{level} {word} ({reading}) - {part_of_speech}: {meaning[:30]}...")
+
+                            # 상세 페이지 열기
+                            driver.execute_script("window.open('');")
+                            driver.switch_to.window(driver.window_handles[1])
+                            driver.get(link)
+                            time.sleep(5)
+
+                            # === 예문 추출 ===
+                            example_sentence = ""
+                            example_translation = ""
+                            try:
+                                example_elem = driver.find_element("css selector", "div.example_item p.origin.my_origin")
+                                html = example_elem.get_attribute("innerHTML")
+                                soup = BeautifulSoup(html, "html.parser")
+                                for ruby in soup.find_all("ruby"):
+                                    rb_text = ruby.rb.get_text() if ruby.rb else ""
+                                    ruby.replace_with(rb_text)
+                                text_span = soup.find("span", class_="text")
+                                if text_span:
+                                    example_sentence = text_span.get_text(strip=True)
+                                else:
+                                    example_sentence = soup.get_text(strip=True)
+                                translation_elem = driver.find_element("css selector", "div.example_item p.translate")
+                                example_translation = translation_elem.text.strip()
+                            except WebDriverException:
+                                print(f"  -> 예문 없음")
+
+                            # === 활용형 추출 ===
+                            html_full = driver.page_source
+                            soup = BeautifulSoup(html_full, "html.parser")
+
+                            if part == "verb":
+                                masu_form = negative_form = volitional_form = ""
+                                conditional_form = imperative_form = potential_form = ""
+
+                                for dt in soup.select("dl.entry_conjugation_list dt.tit"):
+                                    form_type = dt.get("scrolltitle", "")
+                                    dd = dt.find_next_sibling("dd")
+                                    if not dd:
+                                        continue
+                                    
+                                    # 순수 단어만 추출
+                                    form_word = extract_conjugation_word(dd)
+
+                                    if form_type == "ます형":
+                                        masu_form = form_word
+                                    elif form_type == "부정형":
+                                        negative_form = form_word
+                                    elif form_type == "청유형":
+                                        volitional_form = form_word
+                                    elif form_type == "가정형":
+                                        conditional_form = form_word
+                                    elif form_type == "명령형":
+                                        imperative_form = form_word
+                                    elif form_type == "가능형":
+                                        potential_form = form_word
+
+                                if any([masu_form, negative_form, volitional_form, conditional_form, imperative_form, potential_form]):
+                                    verb_conjugation_rows.append({
+                                        "id": verb_conj_id,
+                                        "word_id": word_id,
+                                        "masu_form": masu_form,
+                                        "negative_form": negative_form,
+                                        "volitional_form": volitional_form,
+                                        "conditional_form": conditional_form,
+                                        "imperative_form": imperative_form,
+                                        "potential_form": potential_form
+                                    })
+                                    verb_conj_id += 1
+
+                            elif part == "adjective":
+                                mizen_form = negative_form = te_form = past_form = ""
+                                conditional_form = polite_form = adverbial_form = noun_form = ""
+
+                                for dt in soup.select("dl.entry_conjugation_list dt.tit"):
+                                    form_type = dt.get("scrolltitle", "")
+                                    dd = dt.find_next_sibling("dd")
+                                    if not dd:
+                                        continue
+                                    
+                                    # 순수 단어만 추출
+                                    form_word = extract_conjugation_word(dd)
+
+                                    if form_type == "미연형":
+                                        mizen_form = form_word
+                                    elif form_type == "부정형":
+                                        negative_form = form_word
+                                    elif form_type == "て형":
+                                        te_form = form_word
+                                    elif form_type == "과거형":
+                                        past_form = form_word
+                                    elif form_type == "가정형":
+                                        conditional_form = form_word
+                                    elif form_type == "정중형":
+                                        polite_form = form_word
+
+                                if any([mizen_form, negative_form, te_form, past_form, conditional_form, polite_form]):
+                                    adj_conjugation_rows.append({
+                                        "id": adj_conj_id,
+                                        "word_id": word_id,
+                                        "mizen_form": mizen_form,
+                                        "negative_form": negative_form,
+                                        "te_form": te_form,
+                                        "past_form": past_form,
+                                        "conditional_form": conditional_form,
+                                        "polite_form": polite_form,
+                                        "adverbial_form": adverbial_form,
+                                        "noun_form": noun_form
+                                    })
+                                    adj_conj_id += 1
+
+                            driver.close()
+                            driver.switch_to.window(driver.window_handles[0])
+
+                            created_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                            # 단어 저장
+                            data_rows.append({
+                                "id": word_id,
+                                "level_name": f"N{level}",
+                                "part_of_speech": part_of_speech.lower(),
+                                "word": word,
+                                "reading": reading,
+                                "meaning": meaning,
+                                "example_sentence": example_sentence,
+                                "example_translation": example_translation,
+                                "created_at": created_at
+                            })
+
+                            word_id += 1
+
+                        except WebDriverException as e:
+                            print(f"  -> 단어 추출 실패: {e}")
+                            continue
+
+                    page += 1
+
+                print(f"--- {part} 품사 수집 완료 ---")
+
+            print(f"\nJLPT {level}급 수집 완료!")
+            print(f"현재까지 총 {len(data_rows)}개 단어 수집됨")
+
+        # 최종 CSV 저장
+        with open("jlpt_all_words.csv", "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames_words)
+            writer.writeheader()
+            writer.writerows(data_rows)
+        print(f"\n✅ 최종 CSV 저장 완료: jlpt_all_words.csv ({len(data_rows)}개 단어)")
+
+        if verb_conjugation_rows:
+            with open("jlpt_all_conjugations_verbs.csv", "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames_verb_conj)
+                writer.writeheader()
+                writer.writerows(verb_conjugation_rows)
+            print(f"✅ 최종 CSV 저장 완료: jlpt_all_conjugations_verbs.csv ({len(verb_conjugation_rows)}개 활용형)")
+
+        if adj_conjugation_rows:
+            with open("jlpt_all_conjugations_adjectives.csv", "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames_adj_conj)
+                writer.writeheader()
+                writer.writerows(adj_conjugation_rows)
+            print(f"✅ 최종 CSV 저장 완료: jlpt_all_conjugations_adjectives.csv ({len(adj_conjugation_rows)}개 활용형)")
+
+        # 급수별 통계 출력
+        print(f"\n{'='*50}")
+        print("수집 통계")
+        print(f"{'='*50}")
+        for level in jlpt_levels:
+            level_count = len([row for row in data_rows if row['level_name'] == f'N{level}'])
+            print(f"N{level}급: {level_count}개 단어")
+        print(f"총 단어 수: {len(data_rows)}개")
+        print(f"동사 활용형: {len(verb_conjugation_rows)}개")
+        print(f"형용사 활용형: {len(adj_conjugation_rows)}개")
+
+    finally:
+        driver.quit()
 
 if __name__ == "__main__":
-    try:
-        scrape_jlpt_words()
-        save_to_excel()
-        print("\n스크래핑 완료!")
-        
-    except KeyboardInterrupt:
-        print("\n사용자에 의해 중단되었습니다.")
-        save_to_excel()  # 중단되어도 현재까지 수집한 데이터는 저장
-        
-    except Exception as e:
-        print(f"예상치 못한 오류: {e}")
-        save_to_excel()  # 오류가 발생해도 현재까지 수집한 데이터는 저장
+    fetch_jlpt_words()
